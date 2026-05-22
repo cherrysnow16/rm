@@ -2,9 +2,9 @@
 set -x
 
 # ============================================================
-# TPAB-RewardFlow ALFWorld Training Script
+# TPAB-RewardFlow SciWorld Training Script
 # Usage:
-#   bash tpab_rewardflow/run_tpab_rewardflow_alfworld.sh [vllm|sglang]
+#   bash tpab_rewardflow/run_tpab_rewardflow_sciworld.sh [vllm|sglang]
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,21 +22,20 @@ fi
 
 # ---- Paths ----
 MODEL_PATH=Qwen/Qwen2.5-7B-Instruct
-export ALFWORLD_DATA="${ALFWORLD_DATA:-/home/jbnu_hyun/.cache/alfworld}"
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}"
 
 # ---- Experiment ----
 SEED=0
 N_GPUS=4
-TOTAL_EPOCHS=100
+TOTAL_EPOCHS=200
 TRAIN_DATA_SIZE=16
 VAL_DATA_SIZE=128
 GROUP_SIZE=8
 EXPERIMENT_NAME="tpab_rewardflow_seed${SEED}"
-WANDB_PROJECT="verl_agent_alfworld"
+WANDB_PROJECT="verl_agent_sciworld"
 
 MODEL_NAME=$(basename $MODEL_PATH)
-CHECKPOINT_DIR=/workspace/rewardflow_sciworld/results/checkpoints/alfworld/${EXPERIMENT_NAME}/${MODEL_NAME}
+CHECKPOINT_DIR=/workspace/rewardflow_sciworld/results/checkpoints/sciworld/${EXPERIMENT_NAME}/${MODEL_NAME}
 
 # ============================================================
 
@@ -51,7 +50,7 @@ python3 -m verl.trainer.main_ppo \
     data.val_files=$HOME/data/verl-agent/text/test.parquet \
     data.train_batch_size=$TRAIN_DATA_SIZE \
     data.val_batch_size=$VAL_DATA_SIZE \
-    data.max_prompt_length=2048 \
+    data.max_prompt_length=7000 \
     data.max_response_length=512 \
     data.filter_overlong_prompts=True \
     data.truncation='error' \
@@ -60,33 +59,34 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.actor.ppo_mini_batch_size=256 \
-    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=64 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.actor.use_kl_loss=True \
     actor_rollout_ref.actor.kl_loss_coef=0.01 \
     actor_rollout_ref.actor.kl_loss_type=low_var_kl \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
     actor_rollout_ref.actor.fsdp_config.param_offload=False \
     actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=64 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
     actor_rollout_ref.rollout.name=$ENGINE \
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.7 \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.3 \
     actor_rollout_ref.rollout.enable_chunked_prefill=False \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=False \
     actor_rollout_ref.rollout.val_kwargs.temperature=0.4 \
     actor_rollout_ref.rollout.val_kwargs.do_sample=True \
-    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=64 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=16 \
     actor_rollout_ref.ref.fsdp_config.param_offload=True \
     actor_rollout_ref.actor.use_invalid_action_penalty=True \
     actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
     algorithm.use_kl_in_reward=False \
     algorithm.gamma=0.9 \
-    env.env_name=alfworld/AlfredTWEnv \
+    env.env_name=SciWorld \
     env.seed=$SEED \
-    env.max_steps=25 \
+    env.max_steps=30 \
     env.rollout.n=$GROUP_SIZE \
     env.resources_per_worker.num_cpus=0.1 \
+    env.sciworld.simplifications_preset=easy \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
     trainer.project_name=$WANDB_PROJECT \

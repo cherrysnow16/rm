@@ -81,37 +81,17 @@ class SciWorldWorker:
         info['observation_text'] = obs
         info["possible_actions"] = self.env.get_valid_action_object_combinations()
 
-        # 获取当前分数
         current_score = info.get('score', 0.0)
         info['score'] = current_score
         info['task_score'] = current_score
 
-        # 检测子目标完成
-        if not hasattr(self, 'prev_score'):
-            self.prev_score = 0.0
-
-        # 子目标完成检测: 分数增加表示完成了子目标
-        subgoal_completed = (current_score > self.prev_score)
-
-        # 计算奖励(子目标和任务完成是独立的,可以叠加)
         reward = 0.0
 
-        # 检查子目标完成(独立判断)
-        if subgoal_completed:
+        if current_score == 100:
             reward += 1.0
-            info['subgoal_completed'] = True
-        else:
-            info['subgoal_completed'] = False
-
-        # 检查任务完成(独立判断)
-        if done and current_score > 0:
-            reward += 10.0
             info['won'] = True
         else:
             info['won'] = False
-
-        # 更新prev_score
-        self.prev_score = current_score
 
         return obs, reward, done, info
 
@@ -150,12 +130,8 @@ class SciWorldWorker:
         info["possible_actions"] = self.env.get_valid_action_object_combinations()
         info['won'] = False
         info['task_num'] = task_id
-
-        # 初始化prev_score用于子目标检测
-        self.prev_score = 0.0
         info['score'] = info.get('score', 0.0)
         info['task_score'] = info['score']
-        info['subgoal_completed'] = False
 
         return obs, info
 

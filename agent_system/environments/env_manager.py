@@ -990,7 +990,10 @@ class SciWorldEnvironmentManager(EnvironmentManagerBase):
             if batch_item['active_masks']:
                 info = total_infos[batch_idx][i]
                 won_value = float(info['won'])
+                raw_score = float(info.get('task_score', 0))
                 success['success_rate'].append(won_value)
+                success['task_score'].append(raw_score)
+                success['task_score_no_penalty'].append(max(0.0, raw_score))
 
                 # Optionally track task-specific success
                 task_num = info.get('task_num')

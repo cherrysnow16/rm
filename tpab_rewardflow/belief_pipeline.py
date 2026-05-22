@@ -7,7 +7,6 @@ Stage 2: Identify when each subgoal is first achieved per trajectory, then assig
 
 import re
 import numpy as np
-import torch
 
 from verl import DataProto
 from verl.utils.dataset.rl_dataset import collate_fn
@@ -68,12 +67,17 @@ Below is the full trajectory:
 This trajectory SUCCESSFULLY completed the task. All subgoals were achieved.
 Identify the step at which each subgoal is first achieved.
 
-To do this:
-1. Read through the full trajectory and understand the overall progress.
-2. For each subgoal, find the earliest step where it is clearly accomplished.
-3. A subgoal is achieved when the action directly completes it, not when the agent is navigating toward it.
+Step assignment rules:
+- The step number must be the exact "Step N" number from the trajectory.
+- A subgoal is achieved only when the action at that step directly and completely fulfills it — not a preparatory or partial action.
+- If multiple steps could qualify, use the earliest one.
+- Write the exact action text from that step alongside the step number.
 
-First, reason about the trajectory within <think> </think> tags.
+In your reasoning, explicitly state for each subgoal:
+- Which step and what action completed it.
+- Why that action directly and completely fulfills the subgoal.
+
+First, reason step-by-step about each subgoal within <think> </think> tags.
 Then, output the results within <assignments> </assignments> tags.
 
 Output format:
@@ -81,9 +85,7 @@ Output format:
 ...
 </think>
 <assignments>
-subgoal 1: step <step_number>
-subgoal 2: step <step_number>
-...
+{assignments_format}
 </assignments>"""
 
 STAGE2_FAILURE_PROMPT_TEMPLATE = """You are analyzing a trajectory of a goal-directed task.
@@ -96,15 +98,21 @@ The task is decomposed into the following ordered subgoals:
 Below is the full trajectory:
 {full_trajectory}
 
-This trajectory FAILED to complete the task. Not all subgoals may have been achieved.
+This trajectory FAILED to complete the task. Determine which subgoals were achieved and which were not.
 
-To do this:
-1. Read through the full trajectory carefully.
-2. For each subgoal, decide strictly whether it was actually accomplished — only count it if the action directly and clearly completes it.
-3. Navigation actions (e.g. "go to") do NOT achieve a subgoal on their own.
-4. If a subgoal was never achieved, mark it as "not achieved".
+Step assignment rules:
+- The step number must be the exact "Step N" number from the trajectory.
+- A subgoal is achieved only when the action at that step directly and completely fulfills it — not a preparatory or partial action.
+- If multiple steps could qualify, use the earliest one.
+- Write the exact action text from that step alongside the step number.
+- If the subgoal was never achieved, mark it as "none".
 
-First, reason step-by-step about which subgoals were truly achieved within <think> </think> tags.
+In your reasoning, explicitly state for each subgoal:
+- Whether it was achieved or not, and why.
+- If achieved, which step and what action completed it.
+- If not achieved, what was attempted or why it fell short.
+
+First, reason step-by-step about each subgoal within <think> </think> tags.
 Then, output the results within <assignments> </assignments> tags.
 
 Output format:
@@ -112,9 +120,7 @@ Output format:
 ...
 </think>
 <assignments>
-subgoal 1: step <step_number>   (or "not achieved")
-subgoal 2: step <step_number>   (or "not achieved")
-...
+{assignments_format}
 </assignments>"""
 
 
@@ -143,6 +149,10 @@ def _format_subgoals(subgoals: list[str]) -> str:
     return "\n".join(f"{i + 1}. {sg}" for i, sg in enumerate(subgoals))
 
 
+def _format_assignments_template(subgoals: list[str]) -> str:
+    return "\n".join(f"{sg}: step number action taken   (or \"none\" if not achieved)" for sg in subgoals)
+
+
 def format_stage1_prompt(task_description: str, success_traj_actions: list[list[str]]) -> str:
     return STAGE1_PROMPT_TEMPLATE.format(
         task_description=task_description,
@@ -157,6 +167,7 @@ def format_stage2_prompt(task_description: str, subgoals: list[str],
         task_description=task_description,
         subgoals=_format_subgoals(subgoals),
         full_trajectory=_format_trajectory_actions(actions),
+        assignments_format=_format_assignments_template(subgoals),
     )
 
 
@@ -188,30 +199,38 @@ def parse_stage1_response(response: str) -> list[str] | None:
     return subgoals
 
 
-def parse_stage2_response(response: str, num_subgoals: int, num_actions: int) -> dict[int, int] | None:
+def parse_stage2_response(response: str, subgoals: list[str], num_actions: int) -> dict[int, int] | None:
     """
     Extract subgoal achievement steps from <assignments>...</assignments> block.
     Returns dict {subgoal_idx_0based: step_number} for achieved subgoals, or None on failure.
-    Subgoals marked "not achieved" are excluded from the dict.
+    Subgoals marked "none" are excluded from the dict.
     """
     match = re.search(r"<assignments>(.*?)</assignments>", response, re.DOTALL | re.IGNORECASE)
     if not match:
         return None
     block = match.group(1).strip()
+    subgoal_to_idx = {sg.strip().lower(): i for i, sg in enumerate(subgoals)}
     assignments = {}
     for line in block.splitlines():
         line = line.strip()
         if not line:
             continue
-        # Match "subgoal N: step M" (1-indexed)
-        m = re.match(r"subgoal\s+(\d+)\s*:\s*step\s+(\d+)", line, re.IGNORECASE)
-        if m:
-            sg_1based = int(m.group(1))
-            step = int(m.group(2))
-            if 1 <= sg_1based <= num_subgoals and 0 <= step < num_actions:
-                assignments[sg_1based - 1] = step  # convert to 0-based
-        elif re.match(r"subgoal\s+\d+\s*:\s*not\s+achieved", line, re.IGNORECASE):
+        # Match "<subgoal text>: <step_number> <action...>" or "<subgoal text>: none"
+        m = re.match(r"^(.+?):\s+(.+)$", line)
+        if not m:
+            continue
+        sg_text = m.group(1).strip().lower()
+        value = m.group(2).strip()
+        sg_idx = subgoal_to_idx.get(sg_text)
+        if sg_idx is None:
+            continue
+        if value.lower() == "none":
             continue  # skip unachieved subgoals
+        step_match = re.match(r"(\d+)", value)
+        if step_match:
+            step = int(step_match.group(1))
+            if 0 <= step < num_actions:
+                assignments[sg_idx] = step
     if not assignments:
         return None
     return assignments
@@ -398,7 +417,7 @@ def run_belief_pipeline_batch(
     for i in range(num_trajs):
         num_states = len(raw_state_list[i])
         num_actions = len(raw_action_list[i])
-        assignments = parse_stage2_response(stage2_responses[i], num_subgoals, num_actions)
+        assignments = parse_stage2_response(stage2_responses[i], subgoals, num_actions)
 
         if assignments is None:
             print(f"[TPAB] Stage 2 parse failed for traj {i}. Using fallback beliefs (all 0).")
