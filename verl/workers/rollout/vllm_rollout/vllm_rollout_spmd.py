@@ -148,6 +148,11 @@ class vLLMRollout(BaseRollout):
         # - Otherwise it's the desired value we want to explicitly set.
         engine_kwargs = {key: val for key, val in engine_kwargs.items() if val is not None}
         mm_kwargs = {"limit_mm_per_prompt": limit_mm_per_prompt} if limit_mm_per_prompt is not None else {}
+        # vllm >=0.9.2 validates `disable_mm_preprocessor_cache` against the
+        # model type and rejects it for text-only models. Only pass it when
+        # we actually have multimodal limits configured.
+        if limit_mm_per_prompt is not None:
+            mm_kwargs["disable_mm_preprocessor_cache"] = True
         self.inference_engine = LLM(
             model=model_path,
             enable_sleep_mode=True,
@@ -157,7 +162,6 @@ class vLLMRollout(BaseRollout):
             enforce_eager=config.enforce_eager,
             gpu_memory_utilization=config.gpu_memory_utilization,
             disable_custom_all_reduce=True,
-            disable_mm_preprocessor_cache=True,
             **mm_kwargs,
             skip_tokenizer_init=False,
             max_model_len=max_model_len,

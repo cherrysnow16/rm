@@ -304,9 +304,17 @@ class ActorRolloutRefWorker(Worker):
         sharding_strategy = get_sharding_strategy(fsdp_mesh)
 
         # TODO: add transformer policy
-        # We force reference policy to use CPUOffload to save memory.
-        # We force turn off CPUOffload for actor because it causes incorrect results when using grad accumulation
-        cpu_offload = None if role == "actor" else CPUOffload(offload_params=True)
+        # Actor never offloads (CPUOffload breaks grad accumulation).
+        # Ref defaults to CPUOffload to save memory, but honor
+        # `fsdp_config.param_offload=False` so callers can keep ref on GPU
+        # when there is room. (Required on Blackwell sm_120 + torch 2.7.0,
+        # where the D2H copy that CPUOffload triggers during FSDP init hits
+        # an "illegal memory access" inside flat_param_to(cpu_device).)
+        if role == "actor":
+            cpu_offload = None
+        else:
+            ref_offload = fsdp_config.get("param_offload", True) if fsdp_config is not None else True
+            cpu_offload = CPUOffload(offload_params=True) if ref_offload else None
         fsdp_strategy = self.config.actor.strategy
         if fsdp_strategy == "fsdp":
             actor_module_fsdp = FSDP(

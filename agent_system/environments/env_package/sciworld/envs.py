@@ -63,6 +63,9 @@ class SciWorldWorker:
         random.seed(seed)
         self.rng = random.Random(seed)
 
+        # Track previous step score so we can roll back ScienceWorld's -100 penalty.
+        self.prev_score = 0.0
+
     def step(self, action):
         """Execute a step in the environment"""
         obs, reward, done, info = self.env.step(action)
@@ -82,16 +85,20 @@ class SciWorldWorker:
         info["possible_actions"] = self.env.get_valid_action_object_combinations()
 
         current_score = info.get('score', 0.0)
+
+        # ScienceWorld occasionally emits -100 as a one-shot penalty on bad actions;
+        # roll it back to the previous score so trajectories aren't poisoned.
+        if current_score == -100:
+            current_score = self.prev_score
+
         info['score'] = current_score
         info['task_score'] = current_score
 
-        reward = 0.0
+        # Won = trajectory terminated AND reached the perfect score.
+        info['won'] = bool(done) and current_score == 100
+        reward = 1.0 * float(info['won'])
 
-        if current_score == 100:
-            reward += 1.0
-            info['won'] = True
-        else:
-            info['won'] = False
+        self.prev_score = current_score
 
         return obs, reward, done, info
 
@@ -132,6 +139,8 @@ class SciWorldWorker:
         info['task_num'] = task_id
         info['score'] = info.get('score', 0.0)
         info['task_score'] = info['score']
+
+        self.prev_score = 0.0
 
         return obs, info
 

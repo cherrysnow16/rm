@@ -5,7 +5,10 @@ Stage 1: Decompose task into ordered subgoals using successful trajectories (1 L
 Stage 2: Identify when each subgoal is first achieved per trajectory, then assign belief indices (1 batched LLM call).
 """
 
+import os
 import re
+from datetime import datetime
+
 import numpy as np
 
 from verl import DataProto
@@ -78,7 +81,7 @@ In your reasoning, explicitly state for each subgoal:
 - Why that action directly and completely fulfills the subgoal.
 
 First, reason step-by-step about each subgoal within <think> </think> tags.
-Then, output the results within <assignments> </assignments> tags.
+Then, output the results within <assignments> </assignments> tags, one line per subgoal in the exact format `<subgoal>: <step_number> <action_text>`, where `<step_number>` is the step at which the subgoal was first achieved and `<action_text>` is the exact action taken at that step that fulfilled the subgoal.
 
 Output format:
 <think>
@@ -113,7 +116,7 @@ In your reasoning, explicitly state for each subgoal:
 - If not achieved, what was attempted or why it fell short.
 
 First, reason step-by-step about each subgoal within <think> </think> tags.
-Then, output the results within <assignments> </assignments> tags.
+Then, output the results within <assignments> </assignments> tags, one line per subgoal in the exact format `<subgoal>: <step_number> <action_text>` (where `<step_number>` is the step at which the subgoal was first achieved and `<action_text>` is the exact action taken at that step that fulfilled the subgoal), or `<subgoal>: none` if the subgoal was never achieved.
 
 Output format:
 <think>
@@ -149,8 +152,10 @@ def _format_subgoals(subgoals: list[str]) -> str:
     return "\n".join(f"{i + 1}. {sg}" for i, sg in enumerate(subgoals))
 
 
-def _format_assignments_template(subgoals: list[str]) -> str:
-    return "\n".join(f"{sg}: step number action taken   (or \"none\" if not achieved)" for sg in subgoals)
+def _format_assignments_template(subgoals: list[str], won: bool) -> str:
+    if won:
+        return "\n".join(f"{sg}: <step_number> <action_text>" for sg in subgoals)
+    return "\n".join(f"{sg}: <step_number> <action_text>   (or \"none\" if not achieved)" for sg in subgoals)
 
 
 def format_stage1_prompt(task_description: str, success_traj_actions: list[list[str]]) -> str:
@@ -167,7 +172,7 @@ def format_stage2_prompt(task_description: str, subgoals: list[str],
         task_description=task_description,
         subgoals=_format_subgoals(subgoals),
         full_trajectory=_format_trajectory_actions(actions),
-        assignments_format=_format_assignments_template(subgoals),
+        assignments_format=_format_assignments_template(subgoals, won=won),
     )
 
 
@@ -211,6 +216,7 @@ def parse_stage2_response(response: str, subgoals: list[str], num_actions: int) 
     block = match.group(1).strip()
     subgoal_to_idx = {sg.strip().lower(): i for i, sg in enumerate(subgoals)}
     assignments = {}
+    matched_any_subgoal = False  # any line that mapped to a known subgoal (incl. "none")
     for line in block.splitlines():
         line = line.strip()
         if not line:
@@ -224,16 +230,36 @@ def parse_stage2_response(response: str, subgoals: list[str], num_actions: int) 
         sg_idx = subgoal_to_idx.get(sg_text)
         if sg_idx is None:
             continue
+        matched_any_subgoal = True
         if value.lower() == "none":
-            continue  # skip unachieved subgoals
+            continue  # legitimate: subgoal not achieved
         step_match = re.match(r"(\d+)", value)
         if step_match:
             step = int(step_match.group(1))
             if 0 <= step < num_actions:
                 assignments[sg_idx] = step
-    if not assignments:
-        return None
-    return assignments
+    if not matched_any_subgoal:
+        return None  # nothing recognizable parsed — real failure
+    return assignments  # may be empty dict {} when all subgoals were "none"
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+STAGE2_FAILURE_LOG_PATH = "./belief_logs/stage2_parse_failures.log"
+
+
+def _log_stage2_parse_failure(traj_idx: int, won: bool, response: str) -> None:
+    """Append a Stage 2 LLM response that failed to parse to STAGE2_FAILURE_LOG_PATH."""
+    os.makedirs(os.path.dirname(STAGE2_FAILURE_LOG_PATH), exist_ok=True)
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    with open(STAGE2_FAILURE_LOG_PATH, "a") as f:
+        f.write(f"=== [{timestamp}] traj_idx={traj_idx} won={won} ===\n")
+        f.write(response)
+        if not response.endswith("\n"):
+            f.write("\n")
+        f.write("=== <end> ===\n\n")
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +447,7 @@ def run_belief_pipeline_batch(
 
         if assignments is None:
             print(f"[TPAB] Stage 2 parse failed for traj {i}. Using fallback beliefs (all 0).")
+            _log_stage2_parse_failure(traj_idx=i, won=episode_rewards[i] > 0, response=stage2_responses[i])
             beliefs_list.append([frozenset()] * num_states)
         else:
             beliefs = derive_segments(assignments, num_states)
